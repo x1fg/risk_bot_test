@@ -2,3 +2,4 @@ playground.ipynb
 .venv
 .env
 __pycache__
+Dockerfile
