@@ -1,5 +1,6 @@
 import faiss
 import asyncio
+import html
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -118,25 +119,82 @@ class DealAnalyzer:
             self.agents_dict[agent_name] = agent_executor
 
     async def generate_report(self, selected_risks, company_name, deal_details):
+        if not selected_risks:
+            return ["❗️ Вы не выбрали ни одного риска для анализа."]
+
         results = {}
+
         for risk in selected_risks:
             agent_name = self.risk_to_agent_map.get(risk)
             if agent_name:
                 try:
                     deal_prompt = f"Компания: {company_name}\nДетали сделки: {deal_details}\nАнализ риска: {risk}"
-                    agent_executor = self.agents_dict[agent_name]
-                    if callable(getattr(agent_executor, "invoke", None)):
-                        if asyncio.iscoroutinefunction(agent_executor.invoke):
-                            response = await agent_executor.invoke({"input": deal_prompt})
-                        else:
-                            response = agent_executor.invoke({"input": deal_prompt})
-                    else:
-                        raise ValueError(f"Ошибка invoke {agent_name}")
-                    
-                    results[risk] = response.get("output", "Ошибка анализа.")
+                    response = self.agents_dict[agent_name].invoke({"input": deal_prompt})
+                    result_text = response.get("output", "Ошибка анализа.")
+                    result_text = clean_formatting(result_text)
+                    result_text = html.escape(result_text)
+                    results[risk] = result_text
                 except Exception as e:
-                    results[risk] = f"Ошибка: {str(e)}"
-        report = "\n\n".join(
-            [f"Риск: {risk}\nРезультат:\n{result}" for risk, result in results.items()]
-        )
-        return report
+                    results[risk] = html.escape(f"Ошибка: {str(e)}")
+
+        report_lines = [f"💡 <b>Сделка:</b> {html.escape(clean_formatting(company_name))}\n"]
+        report_lines.append(f"<b>Детали сделки:</b> {html.escape(clean_formatting(deal_details))}\n")
+
+        for risk, result in results.items():
+            report_lines.append(f"<b>{html.escape(clean_formatting(risk.capitalize()))} риск</b>")
+            report_lines.append(f"Результат анализа:\n{result}\n")
+
+        risk_table = self.generate_risk_table(results)
+        report_text = "\n".join(report_lines)
+        full_report = f"{report_text}\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
+
+        return split_message(full_report)
+
+    
+    def generate_risk_table(self, risk_results):
+        table_header = "Риск              | Уровень риска"
+        table_separator = "-" * len(table_header)
+        table_rows = []
+
+        for risk, result in risk_results.items():
+            if "низкий" in result.lower():
+                risk_level = "Низкий"
+            elif "средний" in result.lower():
+                risk_level = "Средний"
+            elif "высокий" in result.lower():
+                risk_level = "Высокий"
+            else:
+                risk_level = "Не определен"
+
+            table_rows.append(f"{risk.capitalize():<17} | {risk_level}")
+
+        return "\n".join([table_header, table_separator, *table_rows])
+    
+def split_message(message, chunk_size=4000):
+    if not isinstance(message, str):
+        raise TypeError(f"split_message ожидает строку, а не объект типа {type(message)}")
+
+    chunks = []
+    while len(message) > chunk_size:
+        split_index = message.rfind("\n", 0, chunk_size)
+        if split_index == -1:
+            split_index = chunk_size
+        chunks.append(message[:split_index])
+        message = message[split_index:].strip()
+    chunks.append(message)
+    return chunks
+
+def split_text_into_chunks(text, tokenizer, max_length=512):
+    tokens = tokenizer.encode(text, add_special_tokens=False)
+    chunks = []
+    for i in range(0, len(tokens), max_length):
+        chunk_tokens = tokens[i:i + max_length]
+        chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+        chunks.append(chunk_text)
+    return chunks
+
+def clean_formatting(text):
+    text = text.replace("**", "")
+    text = text.replace("####", "")
+    text = text.replace("###", "")
+    return text.strip()

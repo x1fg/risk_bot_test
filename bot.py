@@ -32,7 +32,7 @@ class TelegramBot:
         @self.router.message(Command("start"))
         async def start(message: types.Message, state: FSMContext):
             await state.set_state(DealForm.company_name)
-            await message.answer("Введите название компании, риски которой хотите проанализировать:")
+            await message.answer("Бот находится в тестовом режиме.\nВведите название компании, риски которой хотите проанализировать:")
 
         @self.router.message(DealForm.company_name)
         async def get_company_name(message: types.Message, state: FSMContext):
@@ -72,13 +72,11 @@ class TelegramBot:
             company_name = data.get("company_name", "Неизвестная компания")
             deal_details = data.get("deal_details", "Нет данных о сделке")
             selected_risks = data.get("selected_risks", [])
-            if not selected_risks:
-                await callback_query.answer("Вы не выбрали ни одного риска!", show_alert=True)
-                return
-            await callback_query.answer("Анализирую риски, пожалуйста, подождите...")
-            report = await self.analyzer.generate_report(selected_risks, company_name, deal_details)
-            await callback_query.message.answer(f"Итоговый отчет:\n\n{report}")
+            report_chunks = await self.analyzer.generate_report(selected_risks, company_name, deal_details)
+            for chunk in report_chunks:
+                await callback_query.message.answer(chunk, parse_mode="HTML")
             await state.clear()
+
 
     def _get_risk_keyboard(self, selected_risks=None):
         if selected_risks is None:
