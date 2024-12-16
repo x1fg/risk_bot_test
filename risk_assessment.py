@@ -99,10 +99,11 @@ class DealAnalyzer:
 
     def create_tools(self):
         retriever = self.vector_store.as_retriever(search_type="mmr", search_kwargs={"k": 3})
+        self.retriever = retriever 
         self.retriever_tool = create_retriever_tool(
             retriever,
             "deal_docs_search",
-            "Содержит данные из полезных для анализа документов о клиенте: заключения служб, информация о клиенте, условиях кредитования."
+            "Содержит данные из полезных для анализа документов о клиенте."
         )
         search_tool = TavilySearchResults()
         self.tools = [self.retriever_tool, search_tool]
@@ -128,39 +129,47 @@ class DealAnalyzer:
             agent_name = self.risk_to_agent_map.get(risk)
             if agent_name:
                 try:
-                    api_response = await self._call_api(risk, message)
-                    api_info = self._extract_api_info(risk, api_response) if api_response else "Нет данных из API"
-
-                    deal_prompt = f"""
-                    Компания: {company_name}
-                    Детали сделки: {deal_details}
-                    Данные из API по {risk} риску: {api_info}
-                    Анализ риска: {risk}
-                    """
+                    api_urls = {
+                        "финансовый": 'http://83.220.174.239:9797/rating',
+                        "репутационный": 'http://83.220.174.239:9797/news',
+                        "правовой": 'http://83.220.174.239:9797/juridical'
+                    }
+                    
+                    if risk in api_urls:  
+                        await message.answer(f"🛠️ Вызов API для риска: {risk}")
+                        api_response = await self._call_api(risk)
+                        api_info = self._extract_api_info(risk, api_response) if api_response else "Нет данных из API"
+                    else:
+                        api_info = "Для этого риска API не предусмотрено."
+                    
+                    deal_prompt = f"Компания: {company_name}\nДетали сделки: {deal_details}\nАнализ риска: {risk}"
+                    search_results = self.retriever.get_relevant_documents(deal_prompt)
+                    retrieved_context = "\n".join([doc.page_content for doc in search_results])
+                    deal_prompt += f"\nДанные из API по {risk} риску: {api_info}\nДанные из векторной БД: {retrieved_context}\n"
                     response = self.agents_dict[agent_name].invoke({"input": deal_prompt})
                     result_text = response.get("output", "Ошибка анализа.")
                     result_text = clean_formatting(result_text)
                     results[risk] = html.escape(result_text)
-
+                    
                 except Exception as e:
                     results[risk] = html.escape(f"Ошибка: {str(e)}")
 
-        report_lines = [f"💡 <b>Сделка:</b> {html.escape(clean_formatting(company_name))}\n"]
-        report_lines.append(f"<b>Детали сделки:</b> {html.escape(clean_formatting(deal_details))}\n")
+        report_lines = [f"💡 <b>Сделка:</b> {html.escape(company_name)}\n"]
+        report_lines.append(f"<b>Детали сделки:</b> {html.escape(deal_details)}\n")
 
         for risk, result in results.items():
-            report_lines.append(f"<b>{html.escape(clean_formatting(risk.capitalize()))} риск</b>")
+            report_lines.append(f"<b>{html.escape(risk.capitalize())} риск</b>")
             report_lines.append(f"Результат анализа:\n{result}\n")
-
-        risk_table = self.generate_risk_table(results)
+        risk_table = clean_formatting(self.generate_risk_table(results))
         report_text = "\n".join(report_lines)
+        report_text = clean_formatting(report_text)
         full_report = f"{report_text}\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
-
         report_chunks = split_message(full_report)
         for chunk in report_chunks:
             await message.answer(chunk, parse_mode="HTML")
 
-    async def _call_api(self, risk, message):
+    async def _call_api(self, risk):
+        """ Вызов API для конкретного риска """
         api_urls = {
             "финансовый": 'http://83.220.174.239:9797/rating',
             "репутационный": 'http://83.220.174.239:9797/news',
@@ -169,14 +178,13 @@ class DealAnalyzer:
         try:
             url = api_urls.get(risk)
             if url:
-                await message.answer(f"🛠️ Вызов API для риска: {risk}") 
                 response = requests.get(url, timeout=10)
                 return response.json()
+            return None
         except requests.exceptions.RequestException as e:
             logging.error(f"Ошибка при вызове API для риска '{risk}': {str(e)}")
-            await message.answer(f"⚠️ Ошибка при вызове API для риска '{risk}': {str(e)}")
             return None
-        
+    
     def _extract_api_info(self, risk, api_response):
         if risk == "финансовый":
             value = api_response.get('value', 'Нет данных')
@@ -199,7 +207,10 @@ class DealAnalyzer:
             elif "высокий" in result.lower():
                 risk_level = "Высокий"
 
-            table_rows.append(f"{risk.capitalize():<17} | {risk_level}")
+            risk_name = html.escape(risk.capitalize())
+            risk_level = html.escape(risk_level)
+            
+            table_rows.append(f"{risk_name:<17} | {risk_level}")
 
         return "\n".join([table_header, table_separator, *table_rows])
 
