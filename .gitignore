@@ -3,3 +3,4 @@ playground.ipynb
 .env
 __pycache__
 Dockerfile
+test.ipynb

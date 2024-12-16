@@ -5,12 +5,13 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters.command import Command
 from aiogram import Router
+import requests
+import logging
 
 
 class DealForm(StatesGroup):
     company_name = State()
     deal_details = State()
-    risk_selection = State()
 
 
 class TelegramBot:
@@ -20,82 +21,28 @@ class TelegramBot:
         self.dp = Dispatcher(storage=self.storage)
         self.router = Router()
         self.analyzer = analyzer
-        self.risk_to_agent_map = {
-            "финансовый": "financial_expert",
-            "маркетинговый": "marketing_expert",
-            "репутационный": "reputation_expert",
-            "правовой": "lawyer",
-        }
         self._register_handlers()
 
     def _register_handlers(self):
         @self.router.message(Command("start"))
         async def start(message: types.Message, state: FSMContext):
             await state.set_state(DealForm.company_name)
-            await message.answer("Бот находится в тестовом режиме.\nВведите название компании, риски которой хотите проанализировать:")
+            await message.answer("Введите название компании:")
 
         @self.router.message(DealForm.company_name)
         async def get_company_name(message: types.Message, state: FSMContext):
             company_name = message.text.strip()
             await state.update_data(company_name=company_name)
             await state.set_state(DealForm.deal_details)
-            await message.answer("Введите подробности сделки (сумма, цель, срок и т.д.):")
+            await message.answer("Введите детали сделки:")
 
         @self.router.message(DealForm.deal_details)
         async def get_deal_details(message: types.Message, state: FSMContext):
             deal_details = message.text.strip()
-            await state.update_data(deal_details=deal_details)
-            await state.set_state(DealForm.risk_selection)
-            keyboard = self._get_risk_keyboard()
-            await message.answer(
-                "Выберите риски для анализа (можно выбрать несколько):",
-                reply_markup=keyboard
-            )
-
-        @self.router.callback_query(F.data.startswith("risk_"))
-        async def risk_selection(callback_query: types.CallbackQuery, state: FSMContext):
-            selected_risk = callback_query.data.split("_")[1]
-            data = await state.get_data()
-            selected_risks = data.get("selected_risks", [])
-            if selected_risk in selected_risks:
-                selected_risks.remove(selected_risk)
-            else:
-                selected_risks.append(selected_risk)
-            await state.update_data(selected_risks=selected_risks)
-            keyboard = self._get_risk_keyboard(selected_risks=selected_risks)
-            await callback_query.message.edit_reply_markup(reply_markup=keyboard)
-            await callback_query.answer()
-
-        @self.router.callback_query(F.data == "done")
-        async def generate_report(callback_query: types.CallbackQuery, state: FSMContext):
             data = await state.get_data()
             company_name = data.get("company_name", "Неизвестная компания")
-            deal_details = data.get("deal_details", "Нет данных о сделке")
-            selected_risks = data.get("selected_risks", [])
-            report_chunks = await self.analyzer.generate_report(selected_risks, company_name, deal_details)
-            for chunk in report_chunks:
-                await callback_query.message.answer(chunk, parse_mode="HTML")
-            await state.clear()
-
-
-    def _get_risk_keyboard(self, selected_risks=None):
-        if selected_risks is None:
-            selected_risks = []
-        risks = {
-            "финансовый": "Финансовый риск",
-            "маркетинговый": "Маркетинговый риск",
-            "репутационный": "Риск деловой репутации",
-            "правовой": "Правовой риск",
-        }
-        buttons = [
-            InlineKeyboardButton(
-                text=f"{'✔️ ' if key in selected_risks else '✖️ '}{label}",
-                callback_data=f"risk_{key}"
-            )
-            for key, label in risks.items()
-        ]
-        buttons.append(InlineKeyboardButton(text="Готово", callback_data="done"))
-        return InlineKeyboardMarkup(inline_keyboard=[[button] for button in buttons])
+            selected_risks = list(self.analyzer.risk_to_agent_map.keys())
+            await self.analyzer.generate_report(selected_risks, company_name, deal_details, message)
 
     def run(self):
         self.dp.include_router(self.router)

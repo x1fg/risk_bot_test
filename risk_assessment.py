@@ -1,6 +1,8 @@
 import faiss
 import asyncio
 import html
+import requests
+import logging
 
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -100,7 +102,8 @@ class DealAnalyzer:
         self.retriever_tool = create_retriever_tool(
             retriever,
             "deal_docs_search",
-            "Содержит данные из полезных для анализа документов о клиенте: заключения служб, информация о клиенте, условиях кредитования.")
+            "Содержит данные из полезных для анализа документов о клиенте: заключения служб, информация о клиенте, условиях кредитования."
+        )
         search_tool = TavilySearchResults()
         self.tools = [self.retriever_tool, search_tool]
 
@@ -118,22 +121,27 @@ class DealAnalyzer:
             agent_executor = AgentExecutor(agent=agent, tools=self.tools, verbose=False)
             self.agents_dict[agent_name] = agent_executor
 
-    async def generate_report(self, selected_risks, company_name, deal_details):
-        if not selected_risks:
-            return ["❗️ Вы не выбрали ни одного риска для анализа."]
-
+    async def generate_report(self, selected_risks, company_name, deal_details, message):
         results = {}
 
         for risk in selected_risks:
             agent_name = self.risk_to_agent_map.get(risk)
             if agent_name:
                 try:
-                    deal_prompt = f"Компания: {company_name}\nДетали сделки: {deal_details}\nАнализ риска: {risk}"
+                    api_response = await self._call_api(risk, message)
+                    api_info = self._extract_api_info(risk, api_response) if api_response else "Нет данных из API"
+
+                    deal_prompt = f"""
+                    Компания: {company_name}
+                    Детали сделки: {deal_details}
+                    Данные из API по {risk} риску: {api_info}
+                    Анализ риска: {risk}
+                    """
                     response = self.agents_dict[agent_name].invoke({"input": deal_prompt})
                     result_text = response.get("output", "Ошибка анализа.")
                     result_text = clean_formatting(result_text)
-                    result_text = html.escape(result_text)
-                    results[risk] = result_text
+                    results[risk] = html.escape(result_text)
+
                 except Exception as e:
                     results[risk] = html.escape(f"Ошибка: {str(e)}")
 
@@ -148,28 +156,53 @@ class DealAnalyzer:
         report_text = "\n".join(report_lines)
         full_report = f"{report_text}\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
 
-        return split_message(full_report)
+        report_chunks = split_message(full_report)
+        for chunk in report_chunks:
+            await message.answer(chunk, parse_mode="HTML")
 
-    
+    async def _call_api(self, risk, message):
+        api_urls = {
+            "финансовый": 'http://83.220.174.239:9797/rating',
+            "репутационный": 'http://83.220.174.239:9797/news',
+            "правовой": 'http://83.220.174.239:9797/juridical'
+        }
+        try:
+            url = api_urls.get(risk)
+            if url:
+                await message.answer(f"🛠️ Вызов API для риска: {risk}") 
+                response = requests.get(url, timeout=10)
+                return response.json()
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Ошибка при вызове API для риска '{risk}': {str(e)}")
+            await message.answer(f"⚠️ Ошибка при вызове API для риска '{risk}': {str(e)}")
+            return None
+        
+    def _extract_api_info(self, risk, api_response):
+        if risk == "финансовый":
+            value = api_response.get('value', 'Нет данных')
+            return f"Оценка финансового риска: {value}/20"
+        elif risk in ["репутационный", "правовой"]:
+            return api_response.get('message', 'Нет новостей.')
+        return "Нет данных от API"
+
     def generate_risk_table(self, risk_results):
         table_header = "Риск              | Уровень риска"
         table_separator = "-" * len(table_header)
         table_rows = []
 
         for risk, result in risk_results.items():
+            risk_level = "Не определен"
             if "низкий" in result.lower():
                 risk_level = "Низкий"
             elif "средний" in result.lower():
                 risk_level = "Средний"
             elif "высокий" in result.lower():
                 risk_level = "Высокий"
-            else:
-                risk_level = "Не определен"
 
             table_rows.append(f"{risk.capitalize():<17} | {risk_level}")
 
         return "\n".join([table_header, table_separator, *table_rows])
-    
+
 def split_message(message, chunk_size=4000):
     if not isinstance(message, str):
         raise TypeError(f"split_message ожидает строку, а не объект типа {type(message)}")
@@ -182,15 +215,6 @@ def split_message(message, chunk_size=4000):
         chunks.append(message[:split_index])
         message = message[split_index:].strip()
     chunks.append(message)
-    return chunks
-
-def split_text_into_chunks(text, tokenizer, max_length=512):
-    tokens = tokenizer.encode(text, add_special_tokens=False)
-    chunks = []
-    for i in range(0, len(tokens), max_length):
-        chunk_tokens = tokens[i:i + max_length]
-        chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
-        chunks.append(chunk_text)
     return chunks
 
 def clean_formatting(text):
