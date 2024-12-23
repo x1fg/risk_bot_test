@@ -37,8 +37,9 @@ class CustomAgent(BaseSingleActionAgent, BaseModel):
     def plan(self, intermediate_steps, **kwargs):
         input_data = kwargs["input"]
         prompt = self.prompt_template.format(input=input_data)
-        response = self.llm(prompt)
+        response = self.llm.call_gpt35_turbo(system_prompt="System message", user_prompt=prompt, max_tokens=2048)
         return AgentFinish({"output": response}, log="")
+
 
     async def aplan(self, intermediate_steps, **kwargs):
         return self.plan(intermediate_steps, **kwargs)
@@ -125,48 +126,74 @@ class DealAnalyzer:
     async def generate_report(self, selected_risks, company_name, deal_details, message):
         results = {}
 
+        risk_names_genitive = {
+            "финансовый": "финансового риска",
+            "маркетинговый": "маркетингового риска",
+            "репутационный": "репутационного риска",
+            "правовой": "правового риска"
+        }
+
         for risk in selected_risks:
             agent_name = self.risk_to_agent_map.get(risk)
             if agent_name:
                 try:
+                    risk_genitive = risk_names_genitive.get(risk, f"{risk} риска")
+
+                    await message.answer(f"🔍 Анализ {risk_genitive}...")
+
                     api_urls = {
                         "финансовый": 'http://83.220.174.239:9797/rating',
                         "репутационный": 'http://83.220.174.239:9797/news',
                         "правовой": 'http://83.220.174.239:9797/juridical'
                     }
-                    
-                    if risk in api_urls:  
-                        await message.answer(f"🛠️ Вызов API для риска: {risk}")
+                    api_url = api_urls.get(risk, None)
+                    if api_url:
+                        await message.answer(f"🛠️ Вызов API для {risk_genitive}: {api_url}")
                         api_response = await self._call_api(risk)
-                        api_info = self._extract_api_info(risk, api_response) if api_response else "Нет данных из API"
+                        api_info = await self._extract_api_info(risk, api_response) if api_response else "Нет данных из API"
                     else:
                         api_info = "Для этого риска API не предусмотрено."
-                    
-                    deal_prompt = f"Компания: {company_name}\nДетали сделки: {deal_details}\nАнализ риска: {risk}"
+
+                    deal_prompt = (
+                        f"Компания: {company_name}\n"
+                        f"Детали сделки: {deal_details}\n"
+                        f"Анализ риска: {risk}\n"
+                        f"Данные из API по {risk_genitive}: {api_info}"
+                    )
+
                     search_results = self.retriever.get_relevant_documents(deal_prompt)
                     retrieved_context = "\n".join([doc.page_content for doc in search_results])
-                    deal_prompt += f"\nДанные из API по {risk} риску: {api_info}\nДанные из векторной БД: {retrieved_context}\n"
+                    deal_prompt += f"\nДанные из векторной БД: {retrieved_context}\n"
+
                     response = self.agents_dict[agent_name].invoke({"input": deal_prompt})
                     result_text = response.get("output", "Ошибка анализа.")
                     result_text = clean_formatting(result_text)
+
                     results[risk] = html.escape(result_text)
-                    
+
+                    await message.answer(
+                        f"✅ Анализ {risk_genitive} завершен:\n{result_text}",
+                        parse_mode="HTML"
+                    )
                 except Exception as e:
                     results[risk] = html.escape(f"Ошибка: {str(e)}")
+                    await message.answer(f"❌ Ошибка анализа {risk_genitive}: {str(e)}")
 
         report_lines = [f"💡 <b>Сделка:</b> {html.escape(company_name)}\n"]
         report_lines.append(f"<b>Детали сделки:</b> {html.escape(deal_details)}\n")
 
         for risk, result in results.items():
-            report_lines.append(f"<b>{html.escape(risk.capitalize())} риск</b>")
+            risk_genitive = risk_names_genitive.get(risk, f"{risk} риска")
+            report_lines.append(f"<b>{html.escape(risk_genitive.capitalize())}</b>")
             report_lines.append(f"Результат анализа:\n{result}\n")
         risk_table = clean_formatting(self.generate_risk_table(results))
         report_text = "\n".join(report_lines)
         report_text = clean_formatting(report_text)
-        full_report = f"{report_text}\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
+        full_report = f"\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
         report_chunks = split_message(full_report)
         for chunk in report_chunks:
             await message.answer(chunk, parse_mode="HTML")
+
 
     async def _call_api(self, risk):
         """ Вызов API для конкретного риска """
@@ -185,13 +212,21 @@ class DealAnalyzer:
             logging.error(f"Ошибка при вызове API для риска '{risk}': {str(e)}")
             return None
     
-    def _extract_api_info(self, risk, api_response):
-        if risk == "финансовый":
-            value = api_response.get('value', 'Нет данных')
-            return f"Оценка финансового риска: {value}/20"
-        elif risk in ["репутационный", "правовой"]:
-            return api_response.get('message', 'Нет новостей.')
-        return "Нет данных от API"
+    async def _extract_api_info(self, risk, api_response):
+        if not api_response:
+            return "Нет данных от API"
+        
+        try:
+            summarized_message = self.llm.call_gpt35_turbo(
+                system_prompt="Суммаризируй это до одного абзаца:",
+                user_prompt=api_response.get('message', 'Нет данных.'),
+                max_tokens=150
+            )
+            return summarized_message.strip()
+        except Exception as e:
+            logging.error(f"Ошибка суммаризации данных для риска '{risk}': {str(e)}")
+            return api_response.get('message', 'Нет данных.')
+
 
     def generate_risk_table(self, risk_results):
         table_header = "Риск              | Уровень риска"
