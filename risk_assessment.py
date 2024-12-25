@@ -189,7 +189,7 @@ class DealAnalyzer:
         risk_table = clean_formatting(rself.generate_risk_table(results))
         report_text = "\n".join(report_lines)
         report_text = clean_formatting(rreport_text)
-        full_report = f"\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
+        full_report = f"{report_text}\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
         report_chunks = split_message(full_report)
         for chunk in report_chunks:
             await message.answer(chunk, parse_mode="HTML")
