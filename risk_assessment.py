@@ -186,9 +186,9 @@ class DealAnalyzer:
             risk_genitive = risk_names_genitive.get(risk, f"{risk} риска")
             report_lines.append(f"<b>{html.escape(risk_genitive.capitalize())}</b>")
             report_lines.append(f"Результат анализа:\n{result}\n")
-        risk_table = self.generate_risk_table(results)
+        risk_table = clean_formatting(rself.generate_risk_table(results))
         report_text = "\n".join(report_lines)
-        report_text = report_text
+        report_text = clean_formatting(rreport_text)
         full_report = f"\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
         report_chunks = split_message(full_report)
         for chunk in report_chunks:
@@ -213,7 +213,7 @@ class DealAnalyzer:
             return None
     
     async def _extract_api_info(self, risk, api_response):
-        if not api_response:
+        if not api_response or not api_response.get('message'):
             return "Нет данных от API"
         
         try:
@@ -222,7 +222,7 @@ class DealAnalyzer:
                 user_prompt=api_response.get('message', 'Нет данных.'),
                 max_tokens=150
             )
-            return summarized_message.strip()
+            return summarized_message.strip() if summarized_message else "Нет данных для суммаризации."
         except Exception as e:
             logging.error(f"Ошибка суммаризации данных для риска '{risk}': {str(e)}")
             return api_response.get('message', 'Нет данных.')
@@ -264,7 +264,9 @@ def split_message(message, chunk_size=4000):
     return chunks
 
 def clean_formatting(text):
+    if text is None:
+        return ""
     text = text.replace("**", "")
     text = text.replace("####", "")
     text = text.replace("###", "")
-    return text.strip()
+    return text
