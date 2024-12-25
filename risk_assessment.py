@@ -186,9 +186,9 @@ class DealAnalyzer:
             risk_genitive = risk_names_genitive.get(risk, f"{risk} риска")
             report_lines.append(f"<b>{html.escape(risk_genitive.capitalize())}</b>")
             report_lines.append(f"Результат анализа:\n{result}\n")
-        risk_table = clean_formatting(self.generate_risk_table(results))
+        risk_table = self.generate_risk_table(results)
         report_text = "\n".join(report_lines)
-        report_text = clean_formatting(report_text)
+        report_text = report_text
         full_report = f"\n<b>Сводная таблица рисков</b>:\n<pre>{html.escape(risk_table)}</pre>"
         report_chunks = split_message(full_report)
         for chunk in report_chunks:
